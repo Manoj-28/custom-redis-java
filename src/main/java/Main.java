@@ -19,10 +19,16 @@ class ClientHandler extends Thread {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
                 OutputStream out = clientSocket.getOutputStream()
         ) {
-            String inputLine;
-            while ((inputLine = reader.readLine()) != null) {
+
+            while (true) {
+                String inputLine = reader.readLine();
                 if (inputLine.equals("PING")) {
                     out.write("+PONG\r\n".getBytes());
+                }
+                else if(inputLine.equalsIgnoreCase("ECHO")){
+                    reader.readLine();
+                    String message = reader.readLine();
+                    out.write(String.format("$%d\r\n%s\r\n", message.length(), message).getBytes());
                 }
             }
         } catch (IOException e) {
@@ -31,7 +37,6 @@ class ClientHandler extends Thread {
             try {
                 if (clientSocket != null) {
                     clientSocket.close();
-                    System.out.println("Client disconnected");
                 }
             } catch (IOException e) {
                 System.out.println("IOException when closing client socket: " + e.getMessage());
