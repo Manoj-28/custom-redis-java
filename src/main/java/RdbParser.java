@@ -1,6 +1,5 @@
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -25,7 +24,6 @@ public class RdbParser {
             while (fis.available() > 0) {
                 int marker = fis.read();
                 System.out.println("marker: " + marker);
-//                while((marker = fis.read()) != 0xFE);
                 switch (marker) {
                     case 0xFA:  // Metadata Section
                         parseMetadataSection(fis);
@@ -71,14 +69,21 @@ public class RdbParser {
         System.out.println("Hash table size: " + hashTableSize);
 
         int encryptedKeys = fis.read();
-        int keyType = fis.read();
 
         for (int i = 0; i < hashTableSize; i++) {
+            int expiryTime=-1;
+            int check;
+            if((check = fis.read()) == 0xFC) {       //if it has expiry
+                byte[] expiryTimeBytes = new byte[8];
+                expiryTime = fis.read(expiryTimeBytes);
+                expiryTime = ByteBuffer.wrap(expiryTimeBytes).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                int keyType = fis.read();
+            }
             String key = readString(fis);
             String value = readString(fis);
 
             System.out.println("Parsed key-value: " + key + " -> " + value);
-            ClientHandler.KeyValueStore.put(key, new ValueWithExpiry(value, -1));
+            ClientHandler.KeyValueStore.put(key, new ValueWithExpiry(value, expiryTime));
         }
     }
 

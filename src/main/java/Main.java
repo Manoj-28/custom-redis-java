@@ -108,9 +108,9 @@ class ClientHandler extends Thread {
         response.append("*").append(KeyValueStore.size()).append("\r\n");
 
         for (String key: KeyValueStore.keySet()){
-            if(!KeyValueStore.get(key).isExpired()){
-                response.append(String.format("$%d\r\n%s\r\n", key.length(), key));
-            }
+//            if(!KeyValueStore.get(key).isExpired()){
+            response.append(String.format("$%d\r\n%s\r\n", key.length(), key));
+//            }
         }
         out.write(response.toString().getBytes());
     }
