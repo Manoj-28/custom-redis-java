@@ -50,7 +50,6 @@ class ClientHandler extends Thread {
 
             while (true) {
                 String inputLine = reader.readLine();
-//                System.out.println("Inputline: "+inputLine);
                 if (inputLine == null) break;
 
                 if(inputLine.startsWith("*")){
@@ -77,6 +76,9 @@ class ClientHandler extends Thread {
                             case "CONFIG":
                                 handleConfigGetCommand(commandParts,out);
                                 break;
+                            case "KEYS":
+                                handleKeysCommand(commandParts, out);
+                                break;
                             default:
                                 out.write("-ERR unknown command\r\n".getBytes());
                         }
@@ -97,13 +99,29 @@ class ClientHandler extends Thread {
         }
     }
 
-    private String[] parseRespCommand(BufferedReader reader, String firstline) throws IOException{
-        int numElements = Integer.parseInt(firstline.substring(1));
+    private void handleKeysCommand(String[] commandParts, OutputStream out) throws IOException {
+        if (commandParts.length < 1){
+            out.write("-ERR unsupported KEYS pattern\r\n".getBytes());
+            return;
+        }
+        StringBuilder response = new StringBuilder();
+        response.append("*").append(KeyValueStore.size()).append("\r\n");
+
+        for (String key: KeyValueStore.keySet()){
+            if(!KeyValueStore.get(key).isExpired()){
+                response.append(String.format("$%d\r\n%s\r\n", key.length(), key));
+            }
+        }
+        out.write(response.toString().getBytes());
+    }
+
+    private String[] parseRespCommand(BufferedReader reader, String firstLine) throws IOException{
+        int numElements = Integer.parseInt(firstLine.substring(1));
         String[] commandParts = new String[numElements];
 
         for(int i=0;i<numElements;i++){
-            String lenghtLine = reader.readLine();
-            if(lenghtLine.startsWith("$")){
+            String lengthLine = reader.readLine();
+            if(lengthLine.startsWith("$")){
                 String bulkString = reader.readLine();
                 commandParts[i] = bulkString;
             }
@@ -175,7 +193,7 @@ class ClientHandler extends Thread {
                 out.write(response.getBytes());
                 break;
             case "dbfilename":
-                response = String.format("*2\r\n$10\r\ndbfilename\r\n$%d\r\n%s\r\n", dbfilename.length(), dbfilename);
+                response = String.format("*2\r\n$9\r\ndbfilename\r\n$%d\r\n%s\r\n", dbfilename.length(), dbfilename);
                 out.write(response.getBytes());
                 break;
             default:
@@ -198,6 +216,8 @@ public class Main {
                 dbfilename = args[i+1];
             }
         }
+
+        RdbParser.loadRDB(dir,dbfilename);
 
         ClientHandler.setDir(dir);
         ClientHandler.setDbfilename(dbfilename);
