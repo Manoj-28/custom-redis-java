@@ -142,6 +142,17 @@ class ClientHandler extends Thread {
                 out.write("-ERR unknown configuration parameter\r\n".getBytes());
         }
     }
+    private void handleInfoCommand(String[] commandParts, OutputStream out) throws IOException {
+
+        if(commandParts.length >= 2 && "replication".equalsIgnoreCase(commandParts[1])){
+            String infoResponse = "role:master";
+            String bulkString = String.format("$%d\r\n%s\r\n", infoResponse.length(), infoResponse);
+            out.write(bulkString.getBytes());
+        }
+        else {
+            out.write("-ERR unsupported INFO section\r\n".getBytes());
+        }
+    }
 
     @Override
     public void run() {
@@ -180,6 +191,9 @@ class ClientHandler extends Thread {
                                 break;
                             case "KEYS":
                                 handleKeysCommand(commandParts, out);
+                                break;
+                            case "INFO":
+                                handleInfoCommand(commandParts,out);
                                 break;
                             default:
                                 out.write("-ERR unknown command\r\n".getBytes());
