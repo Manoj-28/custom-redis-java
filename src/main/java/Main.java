@@ -28,6 +28,7 @@ class ClientHandler extends Thread {
 
     private static String dir;
     private static String dbfilename;
+    private static boolean isReplica;
 
     public ClientHandler(Socket socket) {
         this.clientSocket = socket;
@@ -39,6 +40,10 @@ class ClientHandler extends Thread {
 
     public static void setDbfilename(String filename){
         dbfilename = filename;
+    }
+
+    public static void setIsReplica(boolean replica) {
+        isReplica = replica;
     }
 
     private void handleKeysCommand(String[] commandParts, OutputStream out) throws IOException {
@@ -145,7 +150,9 @@ class ClientHandler extends Thread {
     private void handleInfoCommand(String[] commandParts, OutputStream out) throws IOException {
 
         if(commandParts.length >= 2 && "replication".equalsIgnoreCase(commandParts[1])){
-            String infoResponse = "role:master";
+
+            String role = isReplica ? "slave" : "master";
+            String infoResponse = "role:" + role;
             String bulkString = String.format("$%d\r\n%s\r\n", infoResponse.length(), infoResponse);
             out.write(bulkString.getBytes());
         }
@@ -247,6 +254,9 @@ public class Main {
                     if (i + 1 < args.length) {
                         dbfilename = args[i + 1];
                     }
+                    break;
+                case "--replicaof":
+                    ClientHandler.setIsReplica(true);
                     break;
             }
         }
