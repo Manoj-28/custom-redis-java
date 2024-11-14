@@ -166,6 +166,14 @@ class ClientHandler extends Thread {
         }
     }
 
+    private void handleReplConfCommand(String[] commandParts, OutputStream out) throws IOException{
+        if(commandParts.length < 2){
+            out.write("-ERR wrong number of arguments for 'REPLCONF' command\r\n".getBytes());
+            return;
+        }
+        out.write("+OK\r\n".getBytes());
+    }
+
     @Override
     public void run() {
         try (
@@ -206,6 +214,9 @@ class ClientHandler extends Thread {
                                 break;
                             case "INFO":
                                 handleInfoCommand(commandParts,out);
+                                break;
+                            case "REPLCONF":
+                                handleReplConfCommand(commandParts,out);
                                 break;
                             default:
                                 out.write("-ERR unknown command\r\n".getBytes());
@@ -350,6 +361,18 @@ public class Main {
             String replConfCapaResponse = in.readLine();
             if (!"+OK".equals(replConfCapaResponse)) {
                 System.out.println("Unexpected response to REPLCONF capa psync2: " + replConfCapaResponse);
+            }
+
+            String psyncCommand = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+            out.write(psyncCommand.getBytes());
+            out.flush();
+            System.out.println("Sent PSYNC ? -1 to master");
+
+            String psyncResponse = in.readLine();
+            if (psyncResponse != null && psyncResponse.startsWith("+FULLRESYNC")) {
+                System.out.println("Received FULLRESYNC from master: " + psyncResponse);
+            } else {
+                System.out.println("Unexpected response to PSYNC: " + psyncResponse);
             }
         }
         catch (IOException e){
