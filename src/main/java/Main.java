@@ -174,6 +174,15 @@ class ClientHandler extends Thread {
         out.write("+OK\r\n".getBytes());
     }
 
+    private void handlePsyncCommand(String[] commandParts, OutputStream out) throws IOException{
+        if(commandParts.length != 3){
+            out.write("-ERR wrong number of arguments for 'PSYNC' command\r\n".getBytes());
+            return;
+        }
+        String psyncResponse = String.format("+FULLRESYNC %s %d\r\n", REPLICATION_ID, REPLICATION_OFFSET);
+        out.write(psyncResponse.getBytes());
+    }
+
     @Override
     public void run() {
         try (
@@ -217,6 +226,9 @@ class ClientHandler extends Thread {
                                 break;
                             case "REPLCONF":
                                 handleReplConfCommand(commandParts,out);
+                                break;
+                            case "PSYNC":
+                                handlePsyncCommand(commandParts,out);
                                 break;
                             default:
                                 out.write("-ERR unknown command\r\n".getBytes());
