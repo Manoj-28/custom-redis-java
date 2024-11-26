@@ -1,14 +1,14 @@
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.Buffer;
 import java.util.Base64;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+
 
 class ValueWithExpiry{
     String value;
@@ -291,6 +291,7 @@ class ClientHandler extends Thread {
 
 
 public class Main {
+
     public static void main(String[] args) {
         int port = 6379;  // Default port
         String dir = "/tmp/redis-files";  // Default directory
@@ -374,57 +375,146 @@ public class Main {
         }
     }
 
-    public static void connectToMaster(String masterHost, int masterPort, int replicaPort){
-        try(Socket masterSocket = new Socket(masterHost,masterPort);
-            OutputStream out = masterSocket.getOutputStream();
-            BufferedReader in = new BufferedReader(new InputStreamReader(masterSocket.getInputStream()))){
+    public static void connectToMaster(String masterHost, int masterPort, int replicaPort) {
+        try (Socket masterSocket = new Socket(masterHost, masterPort);
+             OutputStream out = masterSocket.getOutputStream();
+             InputStream in = masterSocket.getInputStream();
+             BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {  // Use BufferedReader to read lines
+
             System.out.println("Connected to master at " + masterHost + ":" + masterPort);
+
+            // Step 1: Send PING command
             String pingCommand = "*1\r\n$4\r\nPING\r\n";
             out.write(pingCommand.getBytes());
             out.flush();
             System.out.println("Sent PING to master");
 
-            String pingResponse = in.readLine();
-            if(!"+PONG".equals(pingResponse)){
+            String pingResponse = reader.readLine();  // Use BufferedReader to read the response line
+            if (!"+PONG".equals(pingResponse)) {
                 System.out.println("Unexpected response to PING: " + pingResponse);
                 return;
             }
 
+            // Step 2: Send REPLCONF listening-port
             String replConfListeningPort = String.format("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n%d\r\n", replicaPort);
             out.write(replConfListeningPort.getBytes());
             out.flush();
             System.out.println("Sent REPLCONF listening-port to master");
 
-            String replConfListeningPortResponse = in.readLine();
+            String replConfListeningPortResponse = reader.readLine();
             if (!"+OK".equals(replConfListeningPortResponse)) {
                 System.out.println("Unexpected response to REPLCONF listening-port: " + replConfListeningPortResponse);
                 return;
             }
 
+            // Step 3: Send REPLCONF capa psync2
             String replConfCapa = "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
             out.write(replConfCapa.getBytes());
             out.flush();
             System.out.println("Sent REPLCONF capa psync2 to master");
 
-            String replConfCapaResponse = in.readLine();
+            String replConfCapaResponse = reader.readLine();
             if (!"+OK".equals(replConfCapaResponse)) {
                 System.out.println("Unexpected response to REPLCONF capa psync2: " + replConfCapaResponse);
+                return;
             }
 
+            // Step 4: Send PSYNC command
             String psyncCommand = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
             out.write(psyncCommand.getBytes());
             out.flush();
             System.out.println("Sent PSYNC ? -1 to master");
 
-            String psyncResponse = in.readLine();
+            // Read the FULLRESYNC response
+            String psyncResponse = reader.readLine();
             if (psyncResponse != null && psyncResponse.startsWith("+FULLRESYNC")) {
                 System.out.println("Received FULLRESYNC from master: " + psyncResponse);
+                System.out.println("Finished skipping RDB file.");
             } else {
                 System.out.println("Unexpected response to PSYNC: " + psyncResponse);
+                return;
             }
-        }
-        catch (IOException e){
+            String readVal = reader.readLine();
+            int length = Integer.parseInt(readVal.substring(1));
+            long skipval = reader.skip(length-1);
+            if(skipval != length){
+                System.out.println("Unable to skip " + length + " chars");
+            }
+            else{
+                System.out.println("Values Skipped " + skipval);
+            }
+            System.out.println("read: " + readVal);
+            while (true){
+                String inputLine = reader.readLine();
+                if(inputLine==null) break;
+
+                if(inputLine.startsWith("*")){
+                    String[] commandParts = parseMasterRespCommand(reader, inputLine);
+                    if(commandParts != null && commandParts.length > 0){
+                        String command = commandParts[0].toUpperCase();
+
+                        switch (command){
+                            case "PING":
+                                out.write("+PONG\r\n".getBytes());
+                                break;
+                            case "ECHO":
+                                if(commandParts.length > 1){
+                                    String message = commandParts[1];
+                                    out.write(String.format("$%d\r\n%s\r\n", message.length(), message).getBytes());
+                                }
+                                break;
+                            case "SET":
+                                processSetCommands(commandParts);
+                                break;
+                            default:
+                                System.out.println("-ERR unknown command\r\n");
+                        }
+                    }
+                }
+            }
+
+        } catch (IOException e) {
             System.out.println("IOException when connecting to master: " + e.getMessage());
         }
+    }
+
+
+    private static void processSetCommands(String[] commandParts) throws IOException {
+        if (commandParts.length < 3) {
+            System.out.println("-ERR wrong number of arguments for 'SET' command\r\n".getBytes());
+            return;
+        }
+        String key = commandParts[1];
+        String value = commandParts[2];
+        long expiryTime = -1;
+
+        if(commandParts.length >= 5 && commandParts[3].equalsIgnoreCase("PX")){
+            try{
+                long expiryInMilliseconds = Long.parseLong(commandParts[4]);
+                expiryTime = System.currentTimeMillis() + expiryInMilliseconds;
+            }
+            catch (NumberFormatException e){
+                System.out.println("-ERR invalid PX argument\r\n".getBytes());
+                return;
+            }
+        }
+
+        ClientHandler.KeyValueStore.put(key, new ValueWithExpiry(value,expiryTime));
+
+    }
+
+    private static String[] parseMasterRespCommand(BufferedReader reader, String firstLine) throws IOException{
+        int numElements = Integer.parseInt(firstLine.substring(1));
+        String[] commandParts = new String[numElements];
+
+        for(int i=0;i<numElements;i++){
+            String lengthLine = reader.readLine();
+            if(lengthLine.startsWith("$")){
+                String bulkString = reader.readLine();
+                commandParts[i] = bulkString;
+            }
+        }
+        System.out.println("Parsed RESP Command: " + String.join(", ", commandParts));
+        return commandParts;
     }
 }
