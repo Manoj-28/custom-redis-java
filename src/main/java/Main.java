@@ -24,7 +24,7 @@ class ValueWithExpiry{
 
 // Thread to handle client communication
 class ClientHandler extends Thread {
-    private Socket clientSocket;
+    private final Socket clientSocket;
     public static Map<String, ValueWithExpiry> KeyValueStore = new HashMap<>();
     private static List<Socket> replicas = new CopyOnWriteArrayList<>();
 
@@ -35,6 +35,9 @@ class ClientHandler extends Thread {
     // Hardcoded replication ID and offset
     private static final String REPLICATION_ID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
     private static final long REPLICATION_OFFSET = 0;
+    static final Map<Long, Integer> replicaAcknowledgment = new HashMap<>();
+    static final Object waitLock = 0;
+    static long currentOffset = 0;
 
     public ClientHandler(Socket socket) {
         this.clientSocket = socket;
@@ -77,7 +80,7 @@ class ClientHandler extends Thread {
                 commandParts[i] = bulkString;
             }
         }
-        System.out.println("Parsed RESP Command: " + String.join(", ", commandParts));
+        System.out.println("Master: Parsed RESP Command: " + String.join(", ", commandParts));
         return commandParts;
     }
 
@@ -106,6 +109,10 @@ class ClientHandler extends Thread {
         out.write("+OK\r\n".getBytes());
 
         String respCommand = String.format("*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", key.length(), key, value.length(), value);
+        currentOffset=0;
+        synchronized (waitLock){
+            replicaAcknowledgment.put(currentOffset,0);
+        }
 
         for(Socket replicaSocket : replicas){
             try{
@@ -179,12 +186,32 @@ class ClientHandler extends Thread {
         }
     }
 
-    private void handleReplConfCommand(String[] commandParts, OutputStream out) throws IOException{
-        if(commandParts.length < 2){
-            out.write("-ERR wrong number of arguments for 'REPLCONF' command\r\n".getBytes());
-            return;
+    static void handleReplicaAck(long offset){
+        synchronized (waitLock){
+            replicaAcknowledgment.computeIfPresent(offset,(key,value) -> value+1);
+            waitLock.notifyAll();
         }
-        out.write("+OK\r\n".getBytes());
+        for(Long key: replicaAcknowledgment.keySet()){
+            System.out.println(key + "->" + replicaAcknowledgment.get(key));
+        }
+    }
+
+    private void handleReplConfCommand(String[] commandParts, OutputStream out) throws IOException{
+        if(commandParts[1].equals("listening-port")){
+//            currentOffset++;
+            out.write("+OK\r\n".getBytes());
+        } else if (commandParts[1].equalsIgnoreCase("capa")) {
+
+            handleReplicaAck(currentOffset);
+            out.write("+OK\r\n".getBytes());
+        } else if(commandParts[1].equalsIgnoreCase("ACK")){
+            long ackOffset = currentOffset;
+            handleReplicaAck(ackOffset);
+//                out.write("+OK\r\n".getBytes());
+        }
+        else {
+            out.write("-ERR wrong number of arguments for 'REPLCONF' command\r\n".getBytes());
+        }
     }
 
     private byte[] getEmptyRDBFileContent(){
@@ -217,18 +244,42 @@ class ClientHandler extends Thread {
             out.write("-ERR wrong number of arguments for 'WAIT' command\r\n".getBytes());
             return;
         }
-
         try {
             // Parse the arguments (numreplicas and timeout)
             int numReplicas = Integer.parseInt(commandParts[1]);
             int timeout = Integer.parseInt(commandParts[2]);
 
-            // Calculate the number of connected replicas
-            int connectedReplicas = replicas.size();
+            long startTime = System.currentTimeMillis();
+            int acknowledged = 0;
+            String ackCommand  = "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
+            for(Socket replicaSocket : replicas){
+                try{
+                    OutputStream replicaOut = replicaSocket.getOutputStream();
+                    replicaOut.write(ackCommand.getBytes());
+                    System.out.println("getack send to replica");
+                    replicaOut.flush();
+                }
+                catch (IOException e){
+                    System.out.println("Failed to send commands to replica: "  +e.getMessage());
+                }
+            }
 
-            // Return the number of connected replicas
-            out.write(String.format(":%d\r\n", connectedReplicas).getBytes());
-        } catch (NumberFormatException e) {
+            synchronized (waitLock){
+                while (System.currentTimeMillis() - startTime < timeout && acknowledged < numReplicas){
+                    acknowledged = replicaAcknowledgment.values().stream().mapToInt(Integer::intValue).sum();
+                    for(Long key: replicaAcknowledgment.keySet()){
+                        System.out.println(key + "->" + replicaAcknowledgment.get(key));
+                    }
+                    System.out.println("CurrentOffset: " + currentOffset);
+                    System.out.println("Acknowledged: " + acknowledged);
+                    if(acknowledged < numReplicas){
+                        waitLock.wait(timeout);
+                    }
+                }
+            }
+
+            out.write(String.format(":%d\r\n", acknowledged).getBytes());
+        } catch (NumberFormatException | InterruptedException e) {
             out.write("-ERR invalid arguments for 'WAIT' command\r\n".getBytes());
         }
     }
@@ -249,7 +300,6 @@ class ClientHandler extends Thread {
                     String[] commandParts = parseRespCommand(reader, inputLine);
                     if(commandParts != null && commandParts.length > 0){
                         String command = commandParts[0].toUpperCase();
-
                         switch (command){
                             case "PING":
                                 out.write("+PONG\r\n".getBytes());
@@ -310,8 +360,6 @@ class ClientHandler extends Thread {
     }
 }
 
-
-
 public class Main {
 
     private static long offset = 0;
@@ -323,7 +371,9 @@ public class Main {
         String masterHost="";
         int masterPort=-1;
         boolean isReplica=false;
-
+        synchronized (ClientHandler.waitLock){
+            ClientHandler.replicaAcknowledgment.put(ClientHandler.currentOffset,0);
+        }
 
         // Parse the command line arguments
         for (int i = 0; i < args.length; i++) {
@@ -484,7 +534,7 @@ public class Main {
                                 offset += commandSize;
                                 break;
                             case "REPLCONF":
-                                handleReplconfCommand(out, commandParts);
+                                handleReplicaReplconfCommand(out, commandParts);
                                 break;
                             case "SET":
                                 processSetCommands(commandParts);
@@ -501,13 +551,15 @@ public class Main {
         }
     }
 
-    private static void handleReplconfCommand(OutputStream out, String[] commandParts) throws IOException {
+    private static void handleReplicaReplconfCommand(OutputStream out, String[] commandParts) throws IOException {
         if (commandParts.length >= 2) {
             String subCommand = commandParts[1].toUpperCase();
             if ("GETACK".equals(subCommand)) {
+                System.out.println("GETACK check");
+//                ClientHandler.handleReplicaAck(ClientHandler.currentOffset);
                 String response = String.format("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%d\r\n", String.valueOf(offset).length(), offset);
-                out.write(response.getBytes());
                 System.out.println("Sent REPLCONF ACK " + offset + " to master");
+                out.write(response.getBytes());
                 // Calculate the size of the SET command in bytes
                 int commandSize = calculateCommandSize(commandParts);
                 offset += commandSize; // Update the offset
@@ -543,6 +595,7 @@ public class Main {
             }
         }
 
+        //Check this later
         ClientHandler.KeyValueStore.put(key, new ValueWithExpiry(value, expiryTime));
     }
 
@@ -558,7 +611,7 @@ public class Main {
             }
         }
 
-        System.out.println("Parsed RESP Command: " + String.join(", ", commandParts));
+        System.out.println("Replica: Parsed RESP Command: " + String.join(", ", commandParts));
         return commandParts;
     }
 
