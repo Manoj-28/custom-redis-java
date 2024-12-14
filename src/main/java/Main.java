@@ -38,6 +38,7 @@ class ClientHandler extends Thread {
     static final Map<Long, Integer> replicaAcknowledgment = new HashMap<>();
     static final Object waitLock = 0;
     static long currentOffset = 0;
+    boolean ACKFlag = false;
 
     public ClientHandler(Socket socket) {
         this.clientSocket = socket;
@@ -109,6 +110,7 @@ class ClientHandler extends Thread {
         out.write("+OK\r\n".getBytes());
 
         String respCommand = String.format("*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", key.length(), key, value.length(), value);
+//        String ackCommand  = "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
         currentOffset=0;
         synchronized (waitLock){
             replicaAcknowledgment.put(currentOffset,0);
@@ -118,6 +120,8 @@ class ClientHandler extends Thread {
             try{
                 OutputStream replicaOut = replicaSocket.getOutputStream();
                 replicaOut.write(respCommand.getBytes());
+//                replicaOut.write(ackCommand.getBytes());
+//                System.out.println("getack send to replica");
                 replicaOut.flush();
             }
             catch (IOException e){
@@ -284,6 +288,23 @@ class ClientHandler extends Thread {
         }
     }
 
+    private void handleTypeCommand(String[] commandParts, OutputStream out) throws IOException {
+        if(commandParts.length < 2){
+            out.write("-ERR wrong number of arguments for 'TYPE' command\r\n".getBytes());
+            return;
+        }
+
+        String key = commandParts[1];
+        ValueWithExpiry value = KeyValueStore.get(key);
+
+        if(value != null){
+            out.write("+string\r\n".getBytes());
+        }
+        else{
+            out.write("+none\r\n".getBytes());
+        }
+    }
+
 
     @Override
     public void run() {
@@ -312,6 +333,7 @@ class ClientHandler extends Thread {
                                 break;
                             case "SET":
                                 handleSetCommand(commandParts,out);
+                                ACKFlag=true;
                                 break;
                             case "GET":
                                 handleGetCommand(commandParts, out);
@@ -335,6 +357,9 @@ class ClientHandler extends Thread {
                                 isReplicaConnection = true;
                                 replicas.add(clientSocket);         //add replica socket
                                 handlePsyncCommand(commandParts,out);
+                                break;
+                            case "TYPE":
+                                handleTypeCommand(commandParts,out);
                                 break;
                             default:
                                 out.write("-ERR unknown command\r\n".getBytes());
