@@ -8,6 +8,16 @@
     <artifactId>custom-redis-java</artifactId>
     <version>1.0</version>
 
+    <!-- Add the dependencies section here -->
+    <dependencies>
+        <!-- Jedis dependency -->
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>4.3.0</version> <!-- You can replace with the latest version -->
+        </dependency>
+    </dependencies>
+
     <build>
         <plugins>
             <plugin>
